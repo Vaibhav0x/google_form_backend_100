@@ -22,7 +22,7 @@ app.use("/api/forms", formRoutes);
 app.use("/api/forms", responseRoutes);
 
 sequelize
-    .sync({ alter: true }) // This will update the existing tables
+    .sync({ alter: false }) // This will update the existing tables
     .then(() => {
         console.log("Database connected and tables updated");
         app.listen(process.env.PORT, () =>
