@@ -10,9 +10,17 @@ const responseRoutes = require("./routes/responseRoutes");
 require("dotenv").config();
 const app = express();
 
-app.use(cors());
+// Enable CORS
+app.use(cors({
+    origin: 'http://localhost:5173', // Your React app
+    credentials: true
+}));
+
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use(express.static('public'));
 
 // Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -20,6 +28,8 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use("/api/auth", authRoutes);
 app.use("/api/forms", formRoutes);
 app.use("/api/forms", responseRoutes);
+app.use('/api/upload', formRoutes);
+
 
 sequelize
     .sync({ alter: false }) // This will update the existing tables
