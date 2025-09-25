@@ -63,6 +63,7 @@ router.post("/:formId/responses", upload.any(), async (req, res) => {
 
         // Get form details
         const form = await Form.findByPk(formId);
+        console.log("Form Id is:", formId);
         if (!form) {
             return res.status(404).json({ message: "Form not found" });
         }
@@ -297,6 +298,7 @@ router.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 router.get("/:formId/responses", auth, async (req, res) => {
     try {
         const { formId } = req.params;
+        console.log("Form Id is:", formId);
 
         // Check permission
         const form = await Form.findByPk(formId);
@@ -356,107 +358,98 @@ router.get("/:formId/responses", auth, async (req, res) => {
 });
 
 // Export responses as CSV
-router.get("/:formId/csv", auth, async (req, res) => {
+router.get("/:formId/csv", async (req, res) => {
     try {
         const { formId } = req.params;
+        console.log("Form Id is:", formId);
 
-        // Check permissions
+        // Get form
         const form = await Form.findByPk(formId);
-        if (!form) {
-            return res.status(404).json({ message: "Form not found" });
-        }
+        if (!form) return res.status(404).json({ message: "Form not found" });
 
-        if (req.user.id !== form.created_by && req.user.role !== "admin") {
-            return res.status(403).json({ message: "Forbidden" });
-        }
+        // Get all questions
+        const questions = await Question.findAll({
+            where: { form_id: formId },
+            order: [['id', 'ASC']]
+        });
 
-        // Get all responses
+        // Get all responses with answers
         const responses = await Response.findAll({
             where: { form_id: formId },
             include: [
                 { model: User, attributes: ['name', 'email'], required: false },
                 {
                     model: Answer,
-                    include: [{
-                        model: Question,
-                        attributes: ['question_text', 'question_type']
-                    }]
+                    include: [{ model: Question, attributes: ['id', 'question_text'] }]
                 }
             ],
-            order: [['created_at', 'DESC']]
+            order: [['submitted_at', 'DESC']]
         });
 
-        // Get all questions for headers
-        const questions = await Question.findAll({
-            where: { form_id: formId },
-            order: [['id', 'ASC']]
-        });
-
-        // Create CSV headers
+        console.log('Responses is:', responses);
+        // CSV headers
         const headers = ['Submission ID', 'Submitted At', 'Respondent Name', 'Respondent Email']
             .concat(questions.map(q => q.question_text));
 
-        // Create CSV rows
+        // CSV rows
         const rows = responses.map(response => {
-            const baseData = {
-                id: response.id,
-                submittedAt: response.submitted_at,
-                respondentName: response.User ? response.User.name : 'Anonymous',
-                respondentEmail: response.User ? response.User.email : (response.respondent_email || 'N/A')
-            };
+            const baseData = [
+                response.id,
+                response.submitted_at,
+                response.User?.name || 'Anonymous',
+                response.User?.email || response.respondent_email || 'N/A'
+            ];
 
-            // Add answers in the correct order
+            // Map answers by question id
             const answerMap = {};
-            response.Answers.forEach(answer => {
-                let displayValue = '';
+            response.Answers?.forEach(answer => {
+                if (!answer) return;
+                const qId = answer.question_id || answer.Question?.id;
+                if (!qId) return;
 
-                try {
-                    const parsedValue = JSON.parse(answer.value || '{}');
+                let value = '';
 
-                    if (parsedValue.fileUrls && parsedValue.fileUrls.length > 0) {
-                        displayValue = parsedValue.fileUrls.join(', ');
-                    } else if (Array.isArray(parsedValue)) {
-                        displayValue = parsedValue.join(', ');
-                    } else if (parsedValue.text) {
-                        displayValue = parsedValue.text;
-                    } else {
-                        displayValue = answer.value || '';
-                    }
-                } catch (e) {
-                    displayValue = answer.value || '';
+                // Pick the correct field depending on type
+                if (answer.answer_text) {
+                    value = answer.answer_text;
+                } else if (answer.image_urls) {
+                    const urls = JSON.parse(answer.image_urls || '[]');
+                    value = Array.isArray(urls) ? urls.join('; ') : urls;
+                } else if (answer.file_paths) {
+                    const files = JSON.parse(answer.file_paths || '[]');
+                    value = Array.isArray(files) ? files.join('; ') : files;
+                } else if (answer.selected_options) {
+                    const opts = JSON.parse(answer.selected_options || '[]');
+                    value = Array.isArray(opts) ? opts.join('; ') : opts;
+                } else if (answer.selected_choices) {
+                    const choice = JSON.parse(answer.selected_choices || 'null');
+                    value = choice || '';
+                } else if (answer.image_responses) {
+                    const imgResp = JSON.parse(answer.image_responses || '[]');
+                    value = Array.isArray(imgResp) ? imgResp.join('; ') : imgResp;
                 }
 
-                answerMap[answer.question_id] = displayValue || 'No response';
+                answerMap[qId] = value || 'No response';
             });
 
-            // Add answers in the same order as questions
-            const answers = questions.map(q => answerMap[q.id] || 'No response');
+            const answerValues = questions.map(q => answerMap[q.id] || 'No response');
 
-            return [
-                baseData.id,
-                baseData.submittedAt,
-                baseData.respondentName,
-                baseData.respondentEmail,
-                ...answers
-            ];
+            return [...baseData, ...answerValues];
         });
 
         // Generate CSV content
-        const csvContent = [
+        const csv = [
             headers.join(','),
-            ...rows.map(row => row.map(cell =>
-                cell ? `"${String(cell).replace(/"/g, '""')}"` : '""'
-            ).join(','))
+            ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
         ].join('\n');
 
-        // Set headers for CSV download
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename=form_responses_${formId}.csv`);
+        res.send(csv);
 
-        return res.send(csvContent);
     } catch (err) {
-        console.error('Error generating CSV:', err);
-        return res.status(500).json({ error: err.message });
+        console.error('CSV generation error:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
